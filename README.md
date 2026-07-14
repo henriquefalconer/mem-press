@@ -18,8 +18,16 @@ The green/yellow/red and border colors are sampled directly from btop's default 
 
 ## Run
 
+It's a single native binary (Mach-O, Apple silicon) — like btop, no interpreter or `make`:
+
 ```sh
-make
+./mem-press
 ```
 
 `q` or `Ctrl-C` to quit. No config, no menus, no shortcuts. macOS only (reads `sysctl` memory metrics).
+
+Rebuild from source:
+
+```sh
+clang -O2 -o mem-press mem-press.c
+```
