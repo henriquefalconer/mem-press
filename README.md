@@ -6,7 +6,7 @@ A tiny [btop](https://github.com/aristocratos/btop)-inspired terminal UI that sh
 
 ## What it shows
 
-A rounded box that fills the whole terminal, containing:
+A TUI application, containing:
 
 - A **`Free-Page Availability:`** readout — the raw `kern.memorystatus_level` value (percentage of free pages).
 - A scrolling **braille filled-area graph** where each column is one 1-second sample:
