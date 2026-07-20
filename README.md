@@ -2,7 +2,7 @@
 
 A tiny [btop](https://github.com/aristocratos/btop)-inspired terminal UI that shows **macOS memory pressure** as a single braille graph.
 
-![mem press](docs/screenshot.png)
+![mem press](https://github.com/henriquefalconer/mem-press/blob/main/docs/screenshot.png?raw=true)
 
 ## What it shows
 
