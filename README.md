@@ -18,7 +18,7 @@ The green/yellow/red and border colors are sampled directly from btop's default 
 
 ## Run
 
-It's a single native binary (Mach-O, Apple silicon) — like btop, no interpreter or `make`:
+It's a single native binary (Mach-O, Apple silicon) — like btop:
 
 ```sh
 ./mem-press
