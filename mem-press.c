@@ -1,25 +1,31 @@
-// mem-press - a tiny btop-inspired macOS memory-pressure TUI.
+// mem-press - a tiny btop-inspired memory-pressure TUI for macOS and Linux.
 //
 // A single braille filled-area graph in a rounded box that fills the terminal.
 // Each column is one 1-second sample:
-//   color  <- kern.memorystatus_vm_pressure_level  (1 green, 2 yellow, 4 red)
-//   height <- used pressure (100 - kern.memorystatus_level)
+//   color  <- native pressure signal (macOS) or PSI + availability (Linux)
+//   height <- used pressure (100 - availability)
 // with a per-column btop-style opacity gradient, plus a Free-Page Availability
-// readout (the raw kern.memorystatus_level).  q / Ctrl-C to quit.
+// readout.  q / Ctrl-C to quit.
 //
-// Build:  clang -O2 -o mem-press mem-press.c
+// Build:  cc -O2 -Wall -Wextra -o mem-press mem-press.c -lm
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <unistd.h>
 #include <termios.h>
 #include <signal.h>
 #include <time.h>
 #include <math.h>
 #include <sys/ioctl.h>
-#include <sys/sysctl.h>
 #include <sys/select.h>
+
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+#elif defined(__linux__)
+#include <sys/sysinfo.h>
+#endif
 
 typedef struct { int r, g, b; } Color;
 
@@ -44,16 +50,53 @@ static const char *FILL[5] = { " ", "\xe2\xa3\x80", "\xe2\xa3\xa4", "\xe2\xa3\xb
 #define RESET "\033[0m"
 
 static Color level_color(int lvl) {
+    if (lvl >= 3) return RED;
     if (lvl == 2) return YELLOW;
-    if (lvl == 4) return RED;
     return GREEN;
 }
 
+#if defined(__APPLE__)
 static int sysctl_int(const char *name) {
     int v = 0; size_t n = sizeof(v);
-    if (sysctlbyname(name, &v, &n, NULL, 0) != 0) return 0;
+    if (sysctlbyname(name, &v, &n, NULL, 0) != 0) return -1;
     return v;
 }
+#elif defined(__linux__)
+/* Linux PSI is workload pressure; MemAvailable is the kernel's reclaim-aware
+ * estimate.  Combining them avoids calling a mostly-idle cache-heavy machine
+ * "critical", while still showing pressure before RAM is completely full. */
+static int read_linux_memory(int *available_pct, double *some, double *full) {
+    unsigned long long total = 0, available = 0;
+    char line[256];
+    FILE *fp = fopen("/proc/meminfo", "r");
+    if (fp) {
+        while (fgets(line, sizeof line, fp)) {
+            if (sscanf(line, "MemTotal: %llu kB", &total) == 1) continue;
+            if (sscanf(line, "MemAvailable: %llu kB", &available) == 1) continue;
+        }
+        fclose(fp);
+    }
+    if (!total || !available) {
+        struct sysinfo si;
+        if (sysinfo(&si) != 0 || !si.totalram) return 0;
+        total = (unsigned long long)si.totalram * si.mem_unit;
+        available = (unsigned long long)(si.freeram + si.bufferram) * si.mem_unit;
+    }
+    *available_pct = (int)((available * 100 + total / 2) / total);
+    if (*available_pct > 100) *available_pct = 100;
+    *some = *full = 0.0;
+
+    fp = fopen("/proc/pressure/memory", "r");
+    if (!fp) return 1; /* PSI was added after MemAvailable; availability works alone. */
+    while (fgets(line, sizeof line, fp)) {
+        double avg10;
+        if (sscanf(line, "some avg10=%lf", &avg10) == 1) *some = avg10;
+        if (sscanf(line, "full avg10=%lf", &avg10) == 1) *full = avg10;
+    }
+    fclose(fp);
+    return 1;
+}
+#endif
 
 static double now_sec(void) {
     struct timespec ts;
@@ -67,10 +110,24 @@ static Sample *hist = NULL;
 static int hist_n = 0, hist_cap = 0;
 
 static void push_sample(void) {
-    int lvl = sysctl_int("kern.memorystatus_vm_pressure_level");
-    int freep = sysctl_int("kern.memorystatus_level");
-    double used = (100 - freep) / 100.0;
-    if (used < 0) used = 0; if (used > 1) used = 1;
+    int lvl = 1, freep = -1;
+#if defined(__APPLE__)
+    /* These are the same kernel signals used by Activity Monitor. */
+    lvl = sysctl_int("kern.memorystatus_vm_pressure_level");
+    freep = sysctl_int("kern.memorystatus_level");
+#elif defined(__linux__)
+    double some = 0.0, full = 0.0;
+    if (read_linux_memory(&freep, &some, &full)) {
+        /* PSI thresholds are percentages of the last ten seconds.  `full` is
+         * severe system-wide thrashing; availability provides an early and a
+         * final guard when PSI is disabled (common on older WSL kernels). */
+        if (freep <= 10 || full >= 1.0 || some >= 20.0) lvl = 3;
+        else if (freep <= 20 || some >= 5.0) lvl = 2;
+    }
+#endif
+    double used = freep < 0 ? 0.0 : (100 - freep) / 100.0;
+    if (used < 0) used = 0;
+    if (used > 1) used = 1;
     if (hist_n == hist_cap) {
         if (hist_cap >= 4096) {                 // keep the most recent 4096
             memmove(hist, hist + 1, (hist_cap - 1) * sizeof(Sample));
@@ -102,7 +159,7 @@ static void render(int cols, int rows) {
     int wlen = hist_n < inner_w ? hist_n : inner_w;
     int wstart = hist_n - wlen;
     int pad = inner_w - wlen;
-    int freep = hist_n ? hist[hist_n - 1].freep : 0;
+    int freep = hist_n ? hist[hist_n - 1].freep : -1;
 
     ob_len = 0;
     bputs("\033[H");
@@ -128,8 +185,9 @@ static void render(int cols, int rows) {
     // --- status line (first interior row) ---
     const char *label = "Free-Page Availability:";
     int ll = (int)strlen(label);
-    int pct = freep < 0 ? 0 : (freep > 100 ? 100 : freep);
-    char val[16]; int vl = snprintf(val, sizeof val, "%d%%", pct);
+    char val[16];
+    int vl = freep < 0 ? snprintf(val, sizeof val, "--")
+                       : snprintf(val, sizeof val, "%d%%", freep > 100 ? 100 : freep);
     int gap = inner_w - 2 - ll - vl;
     if (gap >= 1) {
         bfg(BORDER); bputs(VL); bputs(RESET);
@@ -155,7 +213,8 @@ static void render(int cols, int rows) {
             Color base = level_color(s.lvl);
             int total = (int)lround(s.used * dot_h);
             int n = total - rows_below * 4;
-            if (n < 0) n = 0; if (n > 4) n = 4;
+            if (n < 0) n = 0;
+            if (n > 4) n = 4;
             if (n == 0) { if (cr >= 0) { bputs(RESET); cr = cg = cb = -1; } bputs(" "); }
             else {
                 // gradient over the column's own fill: dim base -> bright tip
@@ -235,7 +294,9 @@ int main(void) {
         int rv = select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
         if (rv > 0 && FD_ISSET(STDIN_FILENO, &fds)) {
             char ch;
-            if (read(STDIN_FILENO, &ch, 1) == 1 && (ch == 'q' || ch == 'Q')) break;
+            ssize_t nr = read(STDIN_FILENO, &ch, 1);
+            if (nr == 1 && (ch == 'q' || ch == 'Q')) break;
+            if (nr == 0 || (nr < 0 && errno != EINTR)) break;
         }
     }
     cleanup();
