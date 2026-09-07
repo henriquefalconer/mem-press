@@ -1,4 +1,4 @@
-// mem-press - a tiny btop-inspired memory-pressure TUI for macOS and Linux.
+// mem-press - a tiny btop-inspired memory-pressure TUI for macOS, Linux, and Windows.
 //
 // A single braille filled-area graph in a rounded box that fills the terminal.
 // Each column is one 1-second sample:
@@ -13,6 +13,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#if defined(_WIN32)
+#include <windows.h>
+#include <psapi.h>
+#include <conio.h>
+#include <io.h>
+#else
 #include <unistd.h>
 #include <termios.h>
 #include <signal.h>
@@ -20,6 +26,10 @@
 #include <math.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
+#endif
+#include <signal.h>
+#include <time.h>
+#include <math.h>
 
 #if defined(__APPLE__)
 #include <sys/sysctl.h>
@@ -61,6 +71,21 @@ static int sysctl_int(const char *name) {
     if (sysctlbyname(name, &v, &n, NULL, 0) != 0) return -1;
     return v;
 }
+#elif defined(_WIN32)
+/* PhysicalAvailable is Windows' reclaim-aware available-page count.  Unlike
+ * WSL's /proc view, this is the host-wide physical memory view. */
+static int read_windows_memory(int *available_pct) {
+    PERFORMANCE_INFORMATION pi;
+    memset(&pi, 0, sizeof pi);
+    pi.cb = sizeof pi;
+    if (!GetPerformanceInfo(&pi, sizeof pi)) return 0;
+    unsigned long long total = (unsigned long long)pi.PhysicalTotal * pi.PageSize;
+    unsigned long long available = (unsigned long long)pi.PhysicalAvailable * pi.PageSize;
+    if (!total) return 0;
+    *available_pct = (int)((available * 100 + total / 2) / total);
+    if (*available_pct > 100) *available_pct = 100;
+    return 1;
+}
 #elif defined(__linux__)
 /* Linux PSI is workload pressure; MemAvailable is the kernel's reclaim-aware
  * estimate.  Combining them avoids calling a mostly-idle cache-heavy machine
@@ -99,9 +124,13 @@ static int read_linux_memory(int *available_pct, double *some, double *full) {
 #endif
 
 static double now_sec(void) {
+#if defined(_WIN32)
+    return (double)GetTickCount64() / 1000.0;
+#else
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec + ts.tv_nsec / 1e9;
+#endif
 }
 
 // ---- history ----
@@ -115,6 +144,13 @@ static void push_sample(void) {
     /* These are the same kernel signals used by Activity Monitor. */
     lvl = sysctl_int("kern.memorystatus_vm_pressure_level");
     freep = sysctl_int("kern.memorystatus_level");
+#elif defined(_WIN32)
+    if (read_windows_memory(&freep)) {
+        /* Keep the same three availability bands as Linux. Windows has no
+         * public PSI equivalent, so availability is the portable signal. */
+        if (freep <= 10) lvl = 3;
+        else if (freep <= 20) lvl = 2;
+    }
 #elif defined(__linux__)
     double some = 0.0, full = 0.0;
     if (read_linux_memory(&freep, &some, &full)) {
@@ -236,28 +272,61 @@ static void render(int cols, int rows) {
     for (int i = 0; i < inner_w; i++) bputs(HL);
     bputs(BR); bputs(RESET);
 
+#if defined(_WIN32)
+    fwrite(ob, 1, ob_len, stdout); fflush(stdout);
+#else
     ssize_t w = write(STDOUT_FILENO, ob, ob_len); (void)w;
+#endif
 }
 
 // ---- terminal setup / teardown ----
+#if defined(_WIN32)
+static DWORD g_console_mode = 0;
+static int g_console_saved = 0;
+#else
 static struct termios g_orig;
-static int g_raw = 0, g_alt = 0;
+static int g_raw = 0;
+#endif
+static int g_alt = 0;
 static volatile sig_atomic_t g_stop = 0;
 
 static void cleanup(void) {
-    if (g_alt) { ssize_t w = write(STDOUT_FILENO, "\033[?7h\033[?25h\033[?1049l", 18); (void)w; g_alt = 0; }
+    if (g_alt) { fputs("\033[?7h\033[?25h\033[?1049l", stdout); fflush(stdout); g_alt = 0; }
+#if defined(_WIN32)
+    if (g_console_saved) SetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), g_console_mode);
+#else
     if (g_raw) { tcsetattr(STDIN_FILENO, TCSADRAIN, &g_orig); g_raw = 0; }
+#endif
 }
 static void on_sig(int s) { (void)s; g_stop = 1; }
 
 static void get_size(int *cols, int *rows) {
+#if defined(_WIN32)
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi)) {
+        *cols = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+        *rows = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+    } else { *cols = 80; *rows = 24; }
+#else
     struct winsize ws;
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col && ws.ws_row) {
         *cols = ws.ws_col; *rows = ws.ws_row;
     } else { *cols = 80; *rows = 24; }
+#endif
 }
 
 int main(void) {
+#if defined(_WIN32)
+    HANDLE in = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD mode;
+    if (GetConsoleMode(in, &mode)) {
+        g_console_mode = mode; g_console_saved = 1;
+        SetConsoleMode(in, mode & ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT));
+    }
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD out_mode;
+    if (GetConsoleMode(out, &out_mode)) SetConsoleMode(out, out_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+#else
     if (tcgetattr(STDIN_FILENO, &g_orig) == 0) {
         struct termios raw = g_orig;
         raw.c_lflag &= ~(ICANON | ECHO);        // cbreak; keep ISIG for Ctrl-C
@@ -265,13 +334,18 @@ int main(void) {
         tcsetattr(STDIN_FILENO, TCSANOW, &raw);
         g_raw = 1;
     }
+#endif
+#if defined(_WIN32)
+    signal(SIGINT, on_sig); signal(SIGTERM, on_sig);
+#else
     struct sigaction sa; memset(&sa, 0, sizeof sa); sa.sa_handler = on_sig;
     sigaction(SIGINT, &sa, NULL); sigaction(SIGTERM, &sa, NULL);
+#endif
     atexit(cleanup);
 
     // alt screen, hide cursor, disable auto-wrap (so the full-width bottom
     // border can't scroll and leave a blank last line), clear
-    ssize_t w = write(STDOUT_FILENO, "\033[?1049h\033[?25l\033[?7l\033[2J", 22); (void)w;
+    fputs("\033[?1049h\033[?25l\033[?7l\033[2J", stdout); fflush(stdout);
     g_alt = 1;
 
     push_sample();
@@ -284,11 +358,15 @@ int main(void) {
 
         int cols, rows; get_size(&cols, &rows);
         if (cols != last_cols || rows != last_rows) {
-            ssize_t z = write(STDOUT_FILENO, "\033[2J", 4); (void)z;
+            fputs("\033[2J", stdout); fflush(stdout);
             last_cols = cols; last_rows = rows;
         }
         render(cols, rows);
 
+#if defined(_WIN32)
+        Sleep(250);
+        if (_kbhit()) { int ch = _getch(); if (ch == 'q' || ch == 'Q' || ch == 3) break; }
+#else
         fd_set fds; FD_ZERO(&fds); FD_SET(STDIN_FILENO, &fds);
         struct timeval tv = {0, 250000};
         int rv = select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
@@ -298,6 +376,7 @@ int main(void) {
             if (nr == 1 && (ch == 'q' || ch == 'Q')) break;
             if (nr == 0 || (nr < 0 && errno != EINTR)) break;
         }
+#endif
     }
     cleanup();
     return 0;

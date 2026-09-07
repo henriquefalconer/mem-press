@@ -1,6 +1,6 @@
 # mem-press
 
-A tiny [btop](https://github.com/aristocratos/btop)-inspired terminal UI that shows memory pressure on **macOS, Linux, and WSL** as a single braille graph.
+A tiny [btop](https://github.com/aristocratos/btop)-inspired terminal UI that shows memory pressure on **macOS, Linux, WSL, and native Windows** as a single braille graph.
 
 <img src="https://github.com/henriquefalconer/mem-press/blob/main/docs/screenshot.png?raw=true" width="68%" />
 
@@ -8,9 +8,9 @@ A tiny [btop](https://github.com/aristocratos/btop)-inspired terminal UI that sh
 
 A TUI application, containing:
 
-- A **`Free-Page Availability:`** readout — macOS's kernel free-page percentage, or Linux/WSL's reclaim-aware `MemAvailable / MemTotal` percentage (not just `MemFree`).
+- A **`Free-Page Availability:`** readout — macOS's kernel free-page percentage, Linux/WSL's reclaim-aware `MemAvailable / MemTotal` percentage, or native Windows' `GetPerformanceInfo().PhysicalAvailable / PhysicalTotal` (the host-wide available physical-page count).
 - A scrolling **braille filled-area graph** where each column is one 1-second sample:
-  - **color** ← macOS's `kern.memorystatus_vm_pressure_level` (`1` green, `2` yellow, `4` red). On Linux/WSL it combines reclaim-aware availability with memory PSI (`/proc/pressure/memory`): green (over 20% available and low contention), yellow (20% or less available or PSI `some` ≥ 5%), red (10% or less available, PSI `full` ≥ 1%, or `some` ≥ 20%). PSI is optional.
+  - **color** ← the same three categories on every platform: green (>20% available), yellow (11–20%), red (≤10%). Linux/WSL additionally escalates for memory PSI contention (`some` ≥ 5% / 20%, `full` ≥ 1%); macOS retains its kernel pressure signal. Native Windows uses its host-wide available physical pages because Windows has no public PSI equivalent.
   - **height** ← used-memory pressure (`100 − availability`), so the graph rises under pressure like Activity Monitor's.
   - a btop-style vertical opacity gradient per column (bright tip → dim base).
 
@@ -18,13 +18,13 @@ The green/yellow/red and border colors are sampled directly from btop's default 
 
 ## Run
 
-`./mem-press` is a portable launcher: it compiles a native cached binary for macOS, Linux, or WSL on first run, then executes it.
+`./mem-press` is a portable POSIX launcher: it compiles a native cached binary for macOS, Linux, or WSL on first run, then executes it. In Git Bash/MSYS it also normalizes Windows cache paths. From PowerShell or cmd, run `mem-press.cmd`; it builds a native Windows executable with MSVC (or gcc/clang) and measures the whole Windows host, not the WSL VM.
 
 ```sh
 ./mem-press
 ```
 
-To build manually instead:
+To build manually instead (native Windows builds also need `Psapi.lib` / `-lpsapi`):
 
 ```sh
 cc -O2 -Wall -Wextra -o mem-press.bin mem-press.c -lm
