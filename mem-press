@@ -32,6 +32,16 @@ case "$KERNEL" in
         # Keep artifacts in Git Bash's POSIX /tmp namespace. Native Windows
         # compilers cannot reliably consume a C:\\Users... path here.
         CACHE_ROOT=/tmp/mem-press
+        # GCC/Clang on Windows use TMP/TEMP, even when launched by Git Bash.
+        # Supply both native and POSIX forms so inherited C:\\ paths (and
+        # trailing backslashes) cannot poison compiler temporary-file creation.
+        export TMPDIR=/tmp
+        if command -v cygpath >/dev/null 2>&1; then
+            WINDOWS_TMP=$(cygpath -w /tmp)
+        else
+            WINDOWS_TMP=/tmp
+        fi
+        export TMP="$WINDOWS_TMP" TEMP="$WINDOWS_TMP"
         WINDOWS_BUILD=1
         ;;
     *)
@@ -50,20 +60,18 @@ else
 fi
 
 if [ ! -x "$TARGET" ]; then
+    # Do not use mktemp's returned native path with a Windows compiler: some
+    # MSYS combinations append a separator while converting it. A unique
+    # output name is enough because compilation is atomic below.
     if [ "$WINDOWS_BUILD" -eq 1 ]; then
-        TMP_TEMPLATE="$CACHE_ROOT/.mem-press.XXXXXX.exe"
-        TMP_FALLBACK="$CACHE_ROOT/.mem-press.$$.exe"
+        OUTPUT="$CACHE_ROOT/.mem-press.$$.tmp.exe"
     else
-        TMP_TEMPLATE="$CACHE_ROOT/.mem-press.XXXXXX"
-        TMP_FALLBACK="$CACHE_ROOT/.mem-press.$$"
+        OUTPUT="$CACHE_ROOT/.mem-press.$$.tmp"
     fi
-    if TMP=$(mktemp "$TMP_TEMPLATE" 2>/dev/null); then :; else
-        TMP="$TMP_FALLBACK"
-    fi
-    trap 'rm -f "$TMP"' EXIT HUP INT TERM
-    "$CC" -O2 -Wall -Wextra -o "$TMP" "$SOURCE" $LIBS
-    chmod 755 "$TMP"
-    mv -f "$TMP" "$TARGET"
+    trap 'rm -f "$OUTPUT"' EXIT HUP INT TERM
+    "$CC" -O2 -Wall -Wextra -o "$OUTPUT" "$SOURCE" $LIBS
+    chmod 755 "$OUTPUT"
+    mv -f "$OUTPUT" "$TARGET"
     trap - EXIT HUP INT TERM
 fi
 
