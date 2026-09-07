@@ -283,6 +283,8 @@ static void render(int cols, int rows) {
 #if defined(_WIN32)
 static DWORD g_console_mode = 0;
 static int g_console_saved = 0;
+static UINT g_input_cp = 0, g_output_cp = 0;
+static int g_cp_saved = 0;
 #else
 static struct termios g_orig;
 static int g_raw = 0;
@@ -294,6 +296,11 @@ static void cleanup(void) {
     if (g_alt) { fputs("\033[?7h\033[?25h\033[?1049l", stdout); fflush(stdout); g_alt = 0; }
 #if defined(_WIN32)
     if (g_console_saved) SetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), g_console_mode);
+    if (g_cp_saved) {
+        SetConsoleCP(g_input_cp);
+        SetConsoleOutputCP(g_output_cp);
+        g_cp_saved = 0;
+    }
 #else
     if (g_raw) { tcsetattr(STDIN_FILENO, TCSADRAIN, &g_orig); g_raw = 0; }
 #endif
@@ -317,6 +324,15 @@ static void get_size(int *cols, int *rows) {
 
 int main(void) {
 #if defined(_WIN32)
+    /* The UI is emitted as UTF-8. Native Windows consoles otherwise commonly
+     * decode the box and braille bytes as CP437/CP1252 (Γò¡/Γú╢ mojibake). */
+    g_input_cp = GetConsoleCP();
+    g_output_cp = GetConsoleOutputCP();
+    if (g_input_cp && g_output_cp) {
+        g_cp_saved = 1;
+        SetConsoleCP(CP_UTF8);
+        SetConsoleOutputCP(CP_UTF8);
+    }
     HANDLE in = GetStdHandle(STD_INPUT_HANDLE);
     DWORD mode;
     if (GetConsoleMode(in, &mode)) {
