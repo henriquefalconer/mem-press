@@ -10,11 +10,22 @@ A TUI application, containing:
 
 - A **`Free-Page Availability:`** readout — macOS's kernel free-page percentage, Linux/WSL's reclaim-aware `MemAvailable / MemTotal` percentage, or native Windows' `GetPerformanceInfo().PhysicalAvailable / PhysicalTotal` (the host-wide available physical-page count).
 - A scrolling **braille filled-area graph** where each column is one 1-second sample:
-  - **color** ← the same three categories on every platform: green (>20% available), yellow (11–20%), red (≤10%). Linux/WSL additionally escalates for memory PSI contention (`some` ≥ 5% / 20%, `full` ≥ 1%); macOS retains its kernel pressure signal. Native Windows uses its host-wide available physical pages because Windows has no public PSI equivalent.
+  - **color** uses platform-specific signals (not equivalent measurements):
+    - **macOS:** `kern.memorystatus_vm_pressure_level`: normal → green, warning → yellow, critical → red.
+    - **Linux/WSL:** availability bands (>20% green, 11–20% yellow, ≤10% red), escalated by PSI `some avg10` ≥5% / ≥20% or `full avg10` ≥1%. These thresholds are application policy, not kernel-defined severity levels.
+    - **Windows:** system-wide memory resource notifications: **low → red**, **high → green**, **neither → yellow**. Windows selects the physical-memory thresholds, rather than the app guessing from RAM percentages. Low wins if both queries report signaled during a transition. The intermediate range means “keep memory use constant,” not necessarily thrashing. Only if notification creation/querying fails do colors fall back to the availability bands above. Availability and graph height still use `PhysicalAvailable / PhysicalTotal`.
   - **height** ← used-memory pressure (`100 − availability`), so the graph rises under pressure like Activity Monitor's.
   - a btop-style vertical opacity gradient per column (bright tip → dim base).
 
 The green/yellow/red and border colors are sampled directly from btop's default theme; the box glyphs and braille fill match btop's.
+
+Windows uses the documented [memory resource notifications](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-creatememoryresourcenotification), queried without waiting. These describe physical-memory conditions, not Linux PSI-style stall time, commit exhaustion, or a guaranteed prediction of allocation failure. There is no universal three-color metric across these operating systems.
+
+Native Windows regression test (Git Bash with MinGW GCC):
+
+```sh
+sh tests/windows-pressure.sh
+```
 
 ## Run
 

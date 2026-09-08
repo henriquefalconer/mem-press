@@ -74,6 +74,33 @@ static int sysctl_int(const char *name) {
 #elif defined(_WIN32)
 /* PhysicalAvailable is Windows' reclaim-aware available-page count.  Unlike
  * WSL's /proc view, this is the host-wide physical memory view. */
+static HANDLE g_low_memory = NULL, g_high_memory = NULL;
+static int g_memory_notifications_initialized = 0;
+
+/* Windows supplies two system-wide physical-memory conditions, with a
+ * documented intermediate range where neither is signaled. These are not
+ * PSI stall percentages or macOS's pressure states. Low takes precedence
+ * because the two queries are not an atomic snapshot. */
+static int windows_pressure_level(int valid, BOOL low, BOOL high, int available_pct) {
+    if (valid) return low ? 3 : (high ? 1 : 2);
+    /* Explicit degraded mode if notification creation/querying fails. */
+    if (available_pct < 0) return 0;
+    return available_pct <= 10 ? 3 : (available_pct <= 20 ? 2 : 1);
+}
+
+static int read_windows_pressure(int available_pct) {
+    if (!g_memory_notifications_initialized) {
+        g_memory_notifications_initialized = 1;
+        g_low_memory = CreateMemoryResourceNotification(LowMemoryResourceNotification);
+        g_high_memory = CreateMemoryResourceNotification(HighMemoryResourceNotification);
+    }
+    BOOL low = FALSE, high = FALSE;
+    int valid = g_low_memory && g_high_memory &&
+        QueryMemoryResourceNotification(g_low_memory, &low) &&
+        QueryMemoryResourceNotification(g_high_memory, &high);
+    return windows_pressure_level(valid, low, high, available_pct);
+}
+
 static int read_windows_memory(int *available_pct) {
     PERFORMANCE_INFORMATION pi;
     memset(&pi, 0, sizeof pi);
@@ -145,12 +172,8 @@ static void push_sample(void) {
     lvl = sysctl_int("kern.memorystatus_vm_pressure_level");
     freep = sysctl_int("kern.memorystatus_level");
 #elif defined(_WIN32)
-    if (read_windows_memory(&freep)) {
-        /* Keep the same three availability bands as Linux. Windows has no
-         * public PSI equivalent, so availability is the portable signal. */
-        if (freep <= 10) lvl = 3;
-        else if (freep <= 20) lvl = 2;
-    }
+    read_windows_memory(&freep);
+    lvl = read_windows_pressure(freep);
 #elif defined(__linux__)
     double some = 0.0, full = 0.0;
     if (read_linux_memory(&freep, &some, &full)) {
@@ -295,6 +318,8 @@ static volatile sig_atomic_t g_stop = 0;
 static void cleanup(void) {
     if (g_alt) { fputs("\033[?7h\033[?25h\033[?1049l", stdout); fflush(stdout); g_alt = 0; }
 #if defined(_WIN32)
+    if (g_low_memory) { CloseHandle(g_low_memory); g_low_memory = NULL; }
+    if (g_high_memory) { CloseHandle(g_high_memory); g_high_memory = NULL; }
     if (g_console_saved) SetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), g_console_mode);
     if (g_cp_saved) {
         SetConsoleCP(g_input_cp);
