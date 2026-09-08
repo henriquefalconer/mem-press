@@ -1,11 +1,28 @@
 #!/bin/sh
-# Build and run mem-press natively for the current OS/architecture.
-# Compiling here makes ./mem-press work natively on macOS, Linux, WSL,
-# and Git Bash on Windows.
+# Run mem-press for the current environment. macOS/Linux build a cached native
+# binary; Git Bash and WSL have a bundled native Windows fallback.
 set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 SOURCE="$SCRIPT_DIR/mem-press.c"
+BUNDLED_WINDOWS="$SCRIPT_DIR/mem-press.exe"
+
+# A native Windows executable is included so Git Bash and WSL work without a
+# compiler. When a compiler is available, rebuild from source as usual.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) WINDOWS_BUILD=1; WSL_BUILD=0 ;;
+    Linux)
+        WINDOWS_BUILD=0
+        # WSL can run the bundled Windows executable when no Linux compiler
+        # is installed. Do not use it for ordinary Linux or macOS.
+        if [ -n "${WSL_INTEROP:-}" ] || grep -qi microsoft /proc/version 2>/dev/null; then
+            WSL_BUILD=1
+        else
+            WSL_BUILD=0
+        fi
+        ;;
+    *) WINDOWS_BUILD=0; WSL_BUILD=0 ;;
+esac
 
 if command -v cc >/dev/null 2>&1; then
     CC=cc
@@ -14,8 +31,7 @@ elif command -v clang >/dev/null 2>&1; then
 elif command -v gcc >/dev/null 2>&1; then
     CC=gcc
 else
-    echo "mem-press: no C compiler found (install cc, clang, or gcc)" >&2
-    exit 127
+    CC=
 fi
 
 if command -v sha256sum >/dev/null 2>&1; then
@@ -59,7 +75,17 @@ else
     LIBS="-lm"
 fi
 
+if [ ! -x "$TARGET" ] && [ -z "$CC" ] && [ "$WINDOWS_BUILD" -eq 1 -o "$WSL_BUILD" -eq 1 ] && [ -x "$BUNDLED_WINDOWS" ]; then
+    # WSL executes this PE through its normal Windows interop; Git Bash runs it
+    # natively. This is the dependency-free path.
+    exec "$BUNDLED_WINDOWS" "$@"
+fi
+
 if [ ! -x "$TARGET" ]; then
+    if [ -z "$CC" ]; then
+        echo "mem-press: no usable C compiler found" >&2
+        exit 127
+    fi
     # Do not use mktemp's returned native path with a Windows compiler: some
     # MSYS combinations append a separator while converting it. A unique
     # output name is enough because compilation is atomic below.

@@ -29,7 +29,7 @@ sh tests/windows-pressure.sh
 
 ## Run
 
-`./mem-press` is a portable POSIX launcher: it compiles a native cached binary for macOS, Linux, or WSL on first run, then executes it. In Git Bash/MSYS it also normalizes Windows cache paths. From PowerShell or cmd, run `mem-press.cmd`; it builds a native Windows executable with MSVC (or gcc/clang) and measures the whole Windows host, not the WSL VM.
+`./mem-press` is a portable launcher. macOS and Linux build a native cached binary on first run. Git Bash and WSL use the checked-in native Windows executable immediately, so they require no C compiler or other build dependency; when a compiler is available, the launcher may rebuild from source. The Windows executable measures the whole Windows host, not the WSL VM. From PowerShell or cmd, run `mem-press.cmd`.
 
 ```sh
 ./mem-press
