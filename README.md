@@ -18,7 +18,7 @@ The green/yellow/red and border colors are sampled directly from btop's default 
 
 ## Run
 
-It's a single native binary (Mach-O, Apple silicon) — like btop:
+It's a single universal native binary (Mach-O, Intel and Apple silicon), for macOS 11 or later — like btop:
 
 ```sh
 ./mem-press
@@ -29,5 +29,5 @@ It's a single native binary (Mach-O, Apple silicon) — like btop:
 Rebuild from source:
 
 ```sh
-clang -O2 -o mem-press mem-press.c
+clang -O2 -arch x86_64 -arch arm64 -mmacosx-version-min=11.0 -o mem-press mem-press.c
 ```

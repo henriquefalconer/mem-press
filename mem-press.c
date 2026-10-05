@@ -7,7 +7,7 @@
 // with a per-column btop-style opacity gradient, plus a Free-Page Availability
 // readout (the raw kern.memorystatus_level).  q / Ctrl-C to quit.
 //
-// Build:  clang -O2 -o mem-press mem-press.c
+// Build:  clang -O2 -arch x86_64 -arch arm64 -mmacosx-version-min=11.0 -o mem-press mem-press.c
 
 #include <stdio.h>
 #include <stdlib.h>
